@@ -1,0 +1,15 @@
+[Unit]
+Description=Snapmaker2MQTT bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=snapmaker2mqtt
+WorkingDirectory=/opt/snapmaker2mqtt
+ExecStart=/usr/bin/java -jar /opt/snapmaker2mqtt/snapmaker2mqtt.jar /opt/snapmaker2mqtt/snapmaker2mqtt.properties
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

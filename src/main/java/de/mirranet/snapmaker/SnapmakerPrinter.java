@@ -69,7 +69,7 @@ public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
     private String klippyState = "disconnected";
     private PrinterStatus lastOnlineStatus;
     private String metadataFile;
-    private Double slicerEstimate;
+    private FileMetadata metadata;
     private boolean jobEndReported = true;
     private boolean initPending;
     private int initGeneration;
@@ -345,10 +345,11 @@ public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
         String filename = printStats == null ? null : printStats.optString("filename", "");
         if (filename != null && !filename.isBlank() && !filename.equals(metadataFile)) {
             metadataFile = filename;
-            slicerEstimate = null;
+            metadata = null;
             fetchMetadata(filename);
         }
-        PrinterStatus next = PrinterStatus.fromRaw(name, klippyState, raw, slicerEstimate);
+        FileMetadata currentMetadata = metadata != null && metadata.filename().equals(filename) ? metadata : null;
+        PrinterStatus next = PrinterStatus.fromRaw(name, klippyState, raw, currentMetadata);
         PrinterStatus previous = status;
         status = next;
 
@@ -375,9 +376,8 @@ public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
 
     private void fetchMetadata(String filename) {
         client.call("server.files.metadata", new JSONObject().put("filename", filename)).thenAccept(result -> {
-            double estimate = result instanceof JSONObject o ? o.optDouble("estimated_time", 0) : 0;
-            if (filename.equals(metadataFile) && estimate > 0) {
-                slicerEstimate = estimate;
+            if (result instanceof JSONObject o && filename.equals(metadataFile)) {
+                metadata = FileMetadata.fromJson(filename, o);
                 if ("ready".equals(klippyState)) {
                     update();
                 }

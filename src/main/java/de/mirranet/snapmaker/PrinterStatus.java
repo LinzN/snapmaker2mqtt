@@ -32,7 +32,7 @@ import java.util.TreeMap;
  * @param printState       job state
  * @param message          message from {@code display_status} (M117), the job or Klipper
  * @param filename         currently loaded G-code file
- * @param progress         job progress in percent (0..100)
+ * @param progress         job progress in percent (0..100), relative to the G-code part of the file
  * @param printDuration    seconds actually spent printing (without pauses)
  * @param totalDuration    seconds since the job started (including pauses)
  * @param filamentUsedMm   filament used by the current job in mm
@@ -94,9 +94,10 @@ public record PrinterStatus(String printerId,
      * @param printerId      name of the printer
      * @param klippyState    current Klipper state
      * @param raw            object name → fields, as received from Moonraker
-     * @param slicerEstimate slicer time estimate of the current file in seconds, may be null
+     * @param metadata       slicer metadata of the current file, may be null while it is not known yet
      */
-    public static PrinterStatus fromRaw(String printerId, String klippyState, JSONObject raw, Double slicerEstimate) {
+    public static PrinterStatus fromRaw(String printerId, String klippyState, JSONObject raw, FileMetadata metadata) {
+        Double slicerEstimate = metadata == null ? null : metadata.estimatedTime();
         JSONObject printStats = obj(raw, "print_stats");
         JSONObject displayStatus = obj(raw, "display_status");
         JSONObject taskConfig = obj(raw, "print_task_config");
@@ -108,11 +109,7 @@ public record PrinterStatus(String printerId,
             message = str(printStats, "message");
         }
 
-        // display_status.progress follows M73 from the slicer (time based), virtual_sdcard the file position
-        Double progress = dbl(displayStatus, "progress");
-        if (progress == null || progress <= 0) {
-            progress = dbl(obj(raw, "virtual_sdcard"), "progress");
-        }
+        Double progress = fileProgress(obj(raw, "virtual_sdcard"), metadata);
         if (state == PrintState.COMPLETE) {
             progress = 1.0;
         }
@@ -182,6 +179,34 @@ public record PrinterStatus(String printerId,
                 Collections.unmodifiableMap(sensors), Collections.unmodifiableMap(fans),
                 U1Codes.mainState(mainState), U1Codes.actionCode(actionCode),
                 Instant.now());
+    }
+
+    /**
+     * Progress like the U1's own web interface (Fluidd, "file relative"): the read position within
+     * the G-code part of the file. Header, thumbnails and the slicer config block at the end are
+     * left out, they would otherwise make the value jump ahead at the start and stop short of 100 %.
+     *
+     * <p>display_status.progress is deliberately not used: it follows M73 only for 5 seconds after
+     * each M73 and then falls back to the absolute file position, so it flips between two values.
+     *
+     * @return progress 0..1, or null if the printer has not reported a file position
+     */
+    private static Double fileProgress(JSONObject sdcard, FileMetadata metadata) {
+        Double position = dbl(sdcard, "file_position");
+        if (position != null && metadata != null && metadata.gcodeStartByte() != null
+                && metadata.gcodeEndByte() != null && metadata.gcodeEndByte() > metadata.gcodeStartByte()) {
+            double start = metadata.gcodeStartByte();
+            double end = metadata.gcodeEndByte();
+            if (position <= start) {
+                return 0.0;
+            }
+            if (position >= end) {
+                return 1.0;
+            }
+            return (position - start) / (end - start);
+        }
+        // metadata not known (yet): absolute position in the file
+        return dbl(sdcard, "progress");
     }
 
     /**

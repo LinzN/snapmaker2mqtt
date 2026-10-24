@@ -200,7 +200,7 @@ Example `state` (shortened, toolheads 1–3 look like toolhead 0):
 | `klippyState`            | `ready`, `startup`, `shutdown`, `error`                                             |
 | `machineState`           | U1 main state: `idle`, `printing`, `auto_load`, `bed_leveling`, `upgrading`, ...    |
 | `machineAction`          | U1 action: `homing`, `auto_clean_nozzle`, `print_auto_feeding`, `auto_loading`, ... |
-| `progress`               | percent; uses the slicer's `M73` progress when available, otherwise the file position |
+| `progress`               | percent, read position within the G-code part of the file (same as the U1 web UI) |
 | `remaining` / `eta`      | seconds left / expected end, from the slicer estimate and the progress so far       |
 | `printDuration`          | seconds actually printed, `totalDuration` includes pauses                           |
 | `filamentUsed`           | mm of filament used by the current job                                              |

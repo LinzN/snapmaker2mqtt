@@ -1,5 +1,5 @@
 [Unit]
-Description=Snapmaker2MQTT bridge
+Description=snapmaker2mqtt bridge
 After=network-online.target
 Wants=network-online.target
 
@@ -7,7 +7,8 @@ Wants=network-online.target
 Type=simple
 User=snapmaker2mqtt
 WorkingDirectory=/opt/snapmaker2mqtt
-ExecStart=/usr/bin/java -jar /opt/snapmaker2mqtt/snapmaker2mqtt.jar /opt/snapmaker2mqtt/snapmaker2mqtt.properties
+# snapmaker2mqtt.jar and the lib folder from target/ are copied to /opt/snapmaker2mqtt
+ExecStart=/usr/bin/java -jar /opt/snapmaker2mqtt/snapmaker2mqtt.jar --config /opt/snapmaker2mqtt/config.yml
 Restart=always
 RestartSec=5
 

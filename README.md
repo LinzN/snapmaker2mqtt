@@ -1,135 +1,287 @@
-# Snapmaker2MQTT
+# snapmaker2mqtt
 
-Dependency-free Java bridge (and library) that publishes the status and events of a
-**Snapmaker U1** to an MQTT broker – e.g. "print finished", "filament loaded", "toolhead changed".
+A standalone Java bridge between the **Snapmaker U1** and a **local MQTT broker**. It publishes the state of your
+printers and events such as *print finished*, *filament loaded* or *toolhead changed* to MQTT, and it takes commands
+from MQTT (pause, resume, cancel, temperatures, G-code). Everything stays on your LAN: no cloud, no Home Assistant
+required. Works with Home Assistant, Node-RED, [STEM](https://github.com/LinzN/Stem) or anything else that speaks MQTT.
 
-The U1 runs Snapmaker's fork of Klipper + Moonraker. Snapmaker2MQTT connects to Moonraker's
-WebSocket API on port `7125` – nothing has to be installed or changed on the printer.
+The U1 runs Snapmaker's fork of Klipper and Moonraker. The bridge talks to Moonraker's WebSocket API on port `7125`,
+so nothing has to be installed or changed on the printer.
 
-- Pure Java 17, **no external dependencies** (own MQTT 3.1.1 client and JSON parser)
-- Live updates via Moonraker subscriptions (no polling)
-- U1 specifics: four toolheads, RFID filament info per toolhead, machine state / action codes
-- Events with reliable job-end detection (falls back to Moonraker's job history)
-- Commands via MQTT (pause, resume, cancel, G-code, temperatures, ...)
-- Several printers per bridge instance
-- Automatic reconnect to printer and broker, last will for availability
+---
 
-## Quick start
+## How It Works
 
-```bash
-mvn package
-cp snapmaker2mqtt.properties.example snapmaker2mqtt.properties   # set printer.host and mqtt.host
-java -jar target/snapmaker2mqtt.jar snapmaker2mqtt.properties
+```
+                            state / events (JSON) ──►
+Snapmaker U1  ◄── LAN ──►  snapmaker2mqtt  ◄──►  Local MQTT Broker  ◄──►  Home Assistant / Node-RED / STEM
+                            ◄── commands
 ```
 
-The printer's IP is shown on the U1 touchscreen under the network settings.
-If `[authorization]` is enabled in `moonraker.conf`, set `printer.api_key`.
+The bridge subscribes to the printer's Klipper objects, so every change arrives immediately without polling. The state
+is published to `snapmaker2mqtt/<printer>/state` at most once per `publishInterval` (a new print state right away),
+events are published the moment they are detected. Messages on the command topics are translated into Moonraker
+calls.
 
-### systemd
+U1 specifics are covered: the four toolheads, the filament per toolhead (type, color, vendor from the RFID spools or
+the touchscreen) and the U1 machine state and action (homing, nozzle cleaning, auto feeding, ...).
 
-Copy the jar and config to `/opt/snapmaker2mqtt/`, then install `snapmaker2mqtt.service`.
+---
 
-## Configuration
+## Requirements
 
-See [`snapmaker2mqtt.properties.example`](snapmaker2mqtt.properties.example). Every key can be
-overridden by an environment variable: `S2M_` + key in upper case with dots replaced by underscores
-(`mqtt.host` → `S2M_MQTT_HOST`).
+- Java 21 or higher
+- Maven 3.x
+- A running local MQTT broker (e.g. [Mosquitto](https://mosquitto.org/))
+- The printer on the same network, ideally with a fixed IP (DHCP reservation in your router)
 
-## MQTT topics
+---
 
-Prefix `snapmaker`, printer id `u1`:
+## Setup
 
-| Topic | Retained | Content |
-|---|---|---|
-| `snapmaker/bridge/availability` | yes | `online` / `offline` (last will of the bridge) |
-| `snapmaker/u1/availability` | yes | `online` when Moonraker is reachable and Klipper is ready |
-| `snapmaker/u1/status` | yes | full status as JSON (see below) |
-| `snapmaker/u1/state/<value>` | yes | single values, only published when changed |
-| `snapmaker/u1/event` | no | every event as JSON |
-| `snapmaker/u1/event/<type>` | no | the same, one topic per event type |
-| `snapmaker/u1/last_event` | yes | the most recent event |
-| `snapmaker/u1/command/<name>` | – | commands (see below) |
-| `snapmaker/u1/command/result` | no | result of every command |
-| `snapmaker/u1/console` | no | Klipper console output (`publish.console=true`) |
-| `snapmaker/u1/raw/<object>` | yes | raw Klipper objects (`publish.raw=true`) |
+### Step 1 — Build and find your printers
 
-### Single value topics (`state/...`)
+```bash
+git clone https://github.com/LinzN/snapmaker2mqtt.git
+cd snapmaker2mqtt
+mvn clean package
+```
 
-`state`, `klippy_state`, `message`, `machine_state`, `machine_action`, `filename`, `progress`,
-`print_duration`, `remaining`, `eta`, `current_layer`, `total_layers`, `filament_used_mm`,
-`bed/temperature`, `bed/target`, `active_toolhead`,
-`toolhead/<0-3>/temperature|target|active|filament_loaded|filament_type|filament_color|filament_vendor`,
-`sensor/<name>` (e.g. chamber), `fan/<name>` (percent).
+This builds `target/snapmaker2mqtt.jar` and copies all libraries to `target/lib/`. The jar loads them from the `lib`
+folder next to it, so when you move the bridge somewhere else, copy `snapmaker2mqtt.jar` together with the whole `lib`
+folder.
 
-`state` is one of `standby`, `printing`, `paused`, `complete`, `cancelled`, `error`, `offline`.
+Let it find your printers and write them into `config.yml`:
 
-### Status JSON
+```bash
+java -jar target/snapmaker2mqtt.jar discover-config
+```
+
+| Option            | Default      | Description                                                        |
+|-------------------|--------------|--------------------------------------------------------------------|
+| `--ip IP`         | scan the LAN | ask one address instead of scanning (works across VLANs)           |
+| `--timeout N`     | `1`          | seconds to wait per address                                        |
+| `--config FILE`   | `config.yml` | config file to write                                               |
+
+The U1 does not answer broadcasts, so the bridge probes every address of your local networks (the /24 around each of
+your own addresses) on port 7125 and recognizes the U1 by its Klipper objects. Every printer found is written under
+`printers`, named after the host name it reports. A printer whose host is already in the config **overwrites** that
+entry (name and API key are kept). The example printer is removed. `java -jar target/snapmaker2mqtt.jar discover` only
+lists the printers without touching the config.
+
+You can also look up the IP on the U1 touchscreen in the network settings and enter it yourself.
+
+### Step 2 — First run & configuration
+
+If you skipped `discover-config`, the first run creates a `config.yml` in the working directory with an example
+printer that is disabled. Either way, check the file before starting the bridge for real:
+
+```bash
+java -jar target/snapmaker2mqtt.jar
+nano config.yml
+```
+
+```yaml
+mqtt:
+  ip: 127.0.0.1
+  port: 1883
+  username: ''
+  password: ''
+  clientId: snapmaker2mqtt
+  baseTopic: snapmaker2mqtt
+  retain: true
+  publishAttributes: false
+events:
+  progressStep: 10            # progress event every n percent, 0 = off
+  layer: true                 # layer_changed events
+  machineAction: true         # machine_action_changed events
+commands:
+  allowGcode: true            # accept G-code on .../gcode
+printers:
+  u1:                         # printer name, used in the topics
+    enabled: true
+    host: 192.168.1.50
+    port: 7125
+    apiKey: ''                # only if [authorization] is enabled in moonraker.conf
+    publishInterval: 1        # seconds between state messages while printing
+```
+
+| Parameter                | Description                                                                 |
+|--------------------------|-----------------------------------------------------------------------------|
+| `mqtt.ip` / `mqtt.port`  | Your local MQTT broker                                                      |
+| `mqtt.username/password` | Broker credentials, leave empty for anonymous                               |
+| `mqtt.clientId`          | MQTT client id, must be unique on the broker                                |
+| `mqtt.baseTopic`         | Prefix of all topics                                                        |
+| `mqtt.retain`            | Publish state, availability and the last event as retained messages        |
+| `mqtt.publishAttributes` | Additionally publish every state value on its own topic (`.../state/<key>`) |
+
+Add as many printers as you like under `printers`. Use a different config file with `--config /path/to/config.yml`.
+
+### Step 3 — Run
+
+```bash
+java -jar target/snapmaker2mqtt.jar
+```
+
+To run it as a service, copy the jar, the `lib` folder and `config.yml` to `/opt/snapmaker2mqtt/` and install
+[`snapmaker2mqtt.service`](snapmaker2mqtt.service).
+
+---
+
+## MQTT Topics
+
+`<base>` is `mqtt.baseTopic` (default `snapmaker2mqtt`), `<printer>` is the name from `config.yml`.
+
+| Topic                            | Direction | Content                                                         |
+|----------------------------------|-----------|-----------------------------------------------------------------|
+| `<base>/bridge/status`           | read      | `online` / `offline` (retained, also the MQTT last will)        |
+| `<base>/<printer>/availability`  | read      | `online` / `offline`, printer reachable and Klipper ready       |
+| `<base>/<printer>/state`         | read      | full state as JSON                                              |
+| `<base>/<printer>/state/<key>`   | read      | single value, only with `publishAttributes: true`               |
+| `<base>/<printer>/event`         | read      | every event as JSON (not retained)                              |
+| `<base>/<printer>/event/<type>`  | read      | the same, one topic per event type, e.g. `event/print_finished` |
+| `<base>/<printer>/event/last`    | read      | the most recent event (retained)                                |
+| `<base>/<printer>/error`         | read      | why a command failed, JSON (not retained)                       |
+| `<base>/<printer>/set`           | write     | settings as JSON object, any number of keys                     |
+| `<base>/<printer>/set/<key>`     | write     | one value as plain text, e.g. `set/bedTarget` ← `60`            |
+| `<base>/<printer>/command`       | write     | `pause`, `resume`, `cancel`, `emergency_stop`, `firmware_restart` |
+| `<base>/<printer>/print`         | write     | file name on the printer to start                               |
+| `<base>/<printer>/gcode`         | write     | G-code script (disable with `commands.allowGcode: false`)       |
+| `<base>/<printer>/get`           | write     | any payload: publish the state now                              |
+
+If the bridge itself dies, the broker sets `bridge/status` to `offline`, but the printer `availability` keeps its last
+value. Consumers should check both.
+
+Publish commands **without** the retain flag. A retained command would run again on every reconnect, so the bridge
+ignores retained messages on the command topics.
+
+### Reading
+
+Example `state` (shortened, toolheads 1–3 look like toolhead 0):
 
 ```json
 {
-  "printer": "u1", "online": true, "klippy_state": "ready", "state": "printing",
-  "message": null, "machine_state": "printing", "machine_action": "idle",
-  "job": {
-    "filename": "benchy_4color.gcode", "progress": 35.0, "print_duration": 42, "total_duration": 45,
-    "remaining": 78, "eta": "2026-10-24T07:23:38Z", "slicer_estimate": 120,
-    "filament_used_mm": 289.1, "current_layer": 7, "total_layers": 20
-  },
-  "bed": { "temperature": 59.5, "target": 60.0 },
-  "active_toolhead": 2,
-  "toolheads": [
-    { "index": 0, "name": "extruder", "temperature": 215.0, "target": 215.0, "power": 0.4, "active": false,
-      "filament": { "loaded": true, "vendor": "Snapmaker", "type": "PLA", "sub_type": "Basic",
-                    "color": "#FF0000", "official": true } }
-  ],
-  "sensors": { "cavity": 28.5 },
-  "fans": { "part": 1.0 },
-  "timestamp": "2026-10-24T07:22:20Z"
+  "available": true,
+  "lastUpdate": "2026-10-24T07:52:47Z",
+  "klippyState": "ready",
+  "printState": "printing",
+  "machineState": "printing",
+  "machineAction": "idle",
+  "filename": "benchy_4color.gcode",
+  "progress": 35,
+  "printDuration": 42,
+  "totalDuration": 45,
+  "remaining": 78,
+  "eta": "2026-10-24T07:54:05Z",
+  "slicerEstimate": 120,
+  "filamentUsed": 289.1,
+  "currentLayer": 7,
+  "totalLayers": 20,
+  "bedTemperature": 59.5,
+  "bedTarget": 60,
+  "activeToolhead": 0,
+  "toolhead0Temperature": 215,
+  "toolhead0Target": 215,
+  "toolhead0Active": true,
+  "toolhead0FilamentLoaded": true,
+  "toolhead0FilamentVendor": "Snapmaker",
+  "toolhead0FilamentType": "PLA",
+  "toolhead0FilamentSubType": "Basic",
+  "toolhead0FilamentColor": "#FF0000",
+  "toolhead0FilamentOfficial": true,
+  "cavityTemperature": 28.5,
+  "partFanSpeed": 100
 }
 ```
 
-`remaining` combines the slicer estimate with the progress based extrapolation.
-`progress` uses `M73` progress from the slicer when available, otherwise the file position.
+| Key                      | Description                                                                         |
+|--------------------------|-------------------------------------------------------------------------------------|
+| `printState`             | `standby`, `printing`, `paused`, `complete`, `cancelled`, `error`                   |
+| `klippyState`            | `ready`, `startup`, `shutdown`, `error`                                             |
+| `machineState`           | U1 main state: `idle`, `printing`, `auto_load`, `bed_leveling`, `upgrading`, ...    |
+| `machineAction`          | U1 action: `homing`, `auto_clean_nozzle`, `print_auto_feeding`, `auto_loading`, ... |
+| `progress`               | percent; uses the slicer's `M73` progress when available, otherwise the file position |
+| `remaining` / `eta`      | seconds left / expected end, from the slicer estimate and the progress so far       |
+| `printDuration`          | seconds actually printed, `totalDuration` includes pauses                           |
+| `filamentUsed`           | mm of filament used by the current job                                              |
+| `currentLayer`           | only if the slicer writes layer info (`SET_PRINT_STATS_INFO`)                       |
+| `<sensor>Temperature`    | additional sensors, e.g. `cavityTemperature` for the chamber                        |
+| `<fan>FanSpeed`          | fans in percent, `partFanSpeed` is the part cooling fan                             |
+
+Temperatures are in °C, durations in seconds. Values the printer doesn't report are left out rather than sent as
+`null`.
 
 ### Events
 
-| Event | When |
-|---|---|
-| `printer_online` / `printer_offline` | Moonraker reachable and Klipper ready / not |
-| `print_started`, `print_paused`, `print_resumed` | job state changes |
-| `print_finished` | job completed successfully |
-| `print_cancelled`, `print_failed` | job cancelled / ended with an error |
-| `progress` | every `events.progress_step` percent |
-| `layer_changed` | new layer (requires layer info from the slicer) |
-| `toolhead_changed` | another toolhead became active |
-| `filament_loaded`, `filament_unloaded`, `filament_changed` | filament in a toolhead changed |
-| `machine_action_changed` | U1 action, e.g. `homing`, `auto_clean_nozzle`, `auto_loading` |
-| `error_message` | Klipper reported a new error |
+| Event                                                  | When                                                    |
+|--------------------------------------------------------|---------------------------------------------------------|
+| `printer_online` / `printer_offline`                   | printer reachable and Klipper ready / not               |
+| `print_started`, `print_paused`, `print_resumed`       | job state changes                                       |
+| `print_finished`                                       | job completed successfully                              |
+| `print_cancelled`, `print_failed`                      | job cancelled / ended with an error                     |
+| `progress`                                             | every `events.progressStep` percent                     |
+| `layer_changed`                                        | new layer (requires layer info from the slicer)         |
+| `toolhead_changed`                                     | another toolhead became active                          |
+| `filament_loaded`, `filament_unloaded`, `filament_changed` | filament in a toolhead changed                      |
+| `machine_action_changed`                               | U1 action changed                                       |
+| `error_message`                                        | Klipper reported a new error                            |
 
 ```json
 {
-  "event": "print_finished", "printer": "u1", "timestamp": "2026-10-24T07:22:25Z",
-  "state": "complete", "filename": "benchy_4color.gcode", "progress": 100,
-  "print_duration": 120, "total_duration": 123, "filament_used_mm": 826, "message": null,
-  "details": { "previous_state": "printing" }
+  "event": "print_finished",
+  "printer": "u1",
+  "timestamp": "2026-10-24T07:52:53Z",
+  "printState": "complete",
+  "filename": "benchy_4color.gcode",
+  "progress": 100,
+  "printDuration": 120,
+  "totalDuration": 123,
+  "filamentUsed": 826,
+  "details": { "previousState": "printing" }
 }
 ```
 
-### Commands
+A job end is also detected when the bridge was disconnected meanwhile, and as a fallback from Moonraker's job
+history if Klipper skips the final state.
 
-Publish to `snapmaker/u1/command/<name>` (retained messages are ignored):
+### Writing
 
-| Command | Payload |
-|---|---|
-| `pause`, `resume`, `cancel` | – |
-| `emergency_stop`, `firmware_restart` | – |
-| `start` | file name on the printer |
-| `gcode` | G-code script (disable with `commands.gcode=false`) |
-| `temperature/<heater>` | target in °C, e.g. `command/temperature/extruder2` → `210` |
+Every writable key uses the **same name and format as in `state`**, so you can send back what you read.
 
-Disable all commands with `commands.enabled=false`. Secure your broker – anyone who can publish
-to these topics can control the printer.
+```bash
+# several settings in one command
+mosquitto_pub -t snapmaker2mqtt/u1/set -m '{"bedTarget":60,"toolhead2Target":220}'
 
-## Use as a library
+# a single value
+mosquitto_pub -t snapmaker2mqtt/u1/set/partFanSpeed -m 50
+
+# job control
+mosquitto_pub -t snapmaker2mqtt/u1/command -m pause
+mosquitto_pub -t snapmaker2mqtt/u1/print -m benchy_4color.gcode
+mosquitto_pub -t snapmaker2mqtt/u1/gcode -m 'G28'
+```
+
+| Key                     | Values                                      |
+|-------------------------|---------------------------------------------|
+| `bedTarget`             | 0 to 150 °C, `0` or `off` switches it off   |
+| `toolhead0Target` … `toolhead3Target` | 0 to 350 °C                   |
+| `partFanSpeed`          | 0 to 100 percent                            |
+
+The whole `set` command is validated before anything is sent: an unknown key or an invalid value rejects it and
+nothing reaches the printer. Klipper still applies its own limits (e.g. the heater's `max_temp`). Errors are
+published to `<base>/<printer>/error`:
+
+```json
+{"topic":"snapmaker2mqtt/u1/set","payload":"{\"toolhead2Target\": 999}","error":"'toolhead2Target': 999 is outside 0 to 350"}
+```
+
+Anyone who can publish to these topics can control the printer, so secure your broker.
+
+---
+
+## Use the API without MQTT
+
+The printer API in `de.mirranet.snapmaker` has no MQTT code and can be used on its own:
 
 ```java
 SnapmakerPrinter printer = new SnapmakerPrinter("u1", "192.168.1.50", 7125, null);
@@ -140,34 +292,75 @@ printer.addListener(new SnapmakerListener() {
             System.out.println("Finished: " + event.status().filename());
         }
     }
-
-    @Override
-    public void onStatus(PrinterStatus status) {
-        // called on every change
-    }
 });
 printer.start();
 
-printer.getStatus().toolhead(0).filamentType();   // "PLA"
+printer.getStatus().toolhead(0).filamentType();         // "PLA"
 printer.pause();
-printer.setTemperature("heater_bed", 60);
-printer.getClient().call("server.files.list", null); // any Moonraker JSON-RPC method
+printer.setToolheadTemperature(2, 220);
+printer.getClient().call("server.files.list", null);   // any Moonraker JSON-RPC method
 ```
 
-`MqttClient` and `Json` can be used on their own as well.
+---
 
-## Project layout
+## Logging
+
+Output goes through `java.util.logging`. To see more, raise the level of the `de.mirranet.snapmaker` logger, e.g.
+with a `logging.properties`:
+
+```properties
+handlers=java.util.logging.ConsoleHandler
+java.util.logging.ConsoleHandler.level=FINEST
+de.mirranet.snapmaker.level=FINEST
+```
+
+```bash
+java -Djava.util.logging.config.file=logging.properties -jar target/snapmaker2mqtt.jar
+```
+
+---
+
+## Project Structure
 
 ```
-de.linzn.snapmaker2mqtt
-├── Snapmaker2Mqtt          command line entry point
-├── bridge                  config + MQTT topic mapping and commands
-├── printer                 SnapmakerPrinter API, status model, event detection
-├── moonraker               Moonraker WebSocket JSON-RPC client
-├── mqtt                    MQTT 3.1.1 client
-└── json                    JSON parser / serializer
+snapmaker2mqtt/
+├── src/main/java/
+│   ├── de/snapmaker2mqtt/
+│   │   ├── SnapmakerApp.java          # entry point, wires MQTT and printers, discovery commands
+│   │   ├── Configuration.java         # config.yml
+│   │   ├── mqtt/MqttManager.java      # broker connection, topics, last will, command routing
+│   │   └── printer/
+│   │       ├── PrinterSettings.java   # one printer entry from config.yml
+│   │       ├── PrinterBridge.java     # one printer: status/events -> topics, commands -> API
+│   │       ├── StateMapper.java       # PrinterStatus / PrinterEvent -> JSON
+│   │       └── CommandMapper.java     # MQTT commands -> API calls, validation
+│   └── de/mirranet/snapmaker/         # Snapmaker U1 API, no MQTT
+│       ├── SnapmakerPrinter.java      # connection, status, events, commands
+│       ├── PrinterStatus.java         # interpreted snapshot incl. toolheads and filament
+│       ├── EventDetector.java         # events from status changes
+│       ├── moonraker/                 # Moonraker WebSocket JSON-RPC client
+│       └── discovery/                 # finds printers on the LAN
+├── config.yml                         # auto-generated on first run
+└── pom.xml
 ```
 
-## License
+---
 
-MIT
+## Related Projects
+
+- [midea2mqtt](https://github.com/LinzN/midea2mqtt) – the same idea for Midea air conditioners
+- [eufymake2mqtt](https://github.com/LinzN/eufymake2mqtt) – the same idea for eufyMake printers
+- [STEM](https://github.com/LinzN/Stem) – Smart Technology Framework for Enhanced Home Management
+
+---
+
+## Author
+
+**LinzN** – [GitHub](https://github.com/LinzN)
+
+---
+
+## Disclaimer
+
+This project is not affiliated with or endorsed by Snapmaker. Snapmaker and Snapmaker U1 are trademarks of their
+owners. Use at your own risk.

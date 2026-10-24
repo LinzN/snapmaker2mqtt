@@ -1,4 +1,4 @@
-package de.linzn.snapmaker2mqtt.printer;
+package de.mirranet.snapmaker;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -52,7 +52,7 @@ public class EventDetector {
                 && !current.machineAction().equals(previous.machineAction())) {
             events.add(event(PrinterEventType.MACHINE_ACTION_CHANGED, current, details(
                     "action", current.machineAction(), "previous", previous.machineAction(),
-                    "machine_state", current.machineState())));
+                    "machineState", current.machineState())));
         }
 
         if (current.printState() == PrintState.ERROR && current.message() != null
@@ -74,7 +74,7 @@ public class EventDetector {
             }
             return;
         }
-        Map<String, Object> d = details("previous_state", from.key());
+        Map<String, Object> d = details("previousState", from.key());
         switch (to) {
             case PRINTING -> events.add(event(from == PrintState.PAUSED && sameJob
                     ? PrinterEventType.PRINT_RESUMED : PrinterEventType.PRINT_STARTED, current, d));
@@ -120,7 +120,7 @@ public class EventDetector {
         if (layerEvents && current.printState().isActive() && current.currentLayer() != null
                 && !Objects.equals(previous.currentLayer(), current.currentLayer())) {
             events.add(event(PrinterEventType.LAYER_CHANGED, current, details(
-                    "layer", current.currentLayer(), "total_layers", current.totalLayers())));
+                    "layer", current.currentLayer(), "totalLayers", current.totalLayers())));
         }
     }
 
@@ -144,8 +144,8 @@ public class EventDetector {
             } else if (now.filamentLoaded() && (!Objects.equals(before.filamentType(), now.filamentType())
                     || !Objects.equals(before.filamentColor(), now.filamentColor())
                     || !Objects.equals(before.filamentSubType(), now.filamentSubType()))) {
-                d.put("previous_type", before.filamentType());
-                d.put("previous_color", before.filamentColor());
+                d.put("previousType", before.filamentType());
+                d.put("previousColor", before.filamentColor());
                 events.add(event(PrinterEventType.FILAMENT_CHANGED, current, d));
             }
         }

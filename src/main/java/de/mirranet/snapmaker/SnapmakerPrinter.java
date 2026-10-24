@@ -1,13 +1,12 @@
-package de.linzn.snapmaker2mqtt.printer;
+package de.mirranet.snapmaker;
 
-import de.linzn.snapmaker2mqtt.json.Json;
-import de.linzn.snapmaker2mqtt.moonraker.MoonrakerClient;
-import de.linzn.snapmaker2mqtt.moonraker.MoonrakerListener;
+import de.mirranet.snapmaker.moonraker.MoonrakerClient;
+import de.mirranet.snapmaker.moonraker.MoonrakerListener;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -16,11 +15,11 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * High level API for one Snapmaker U1.
- * <p>
- * Connects to the printer's Moonraker, subscribes to all relevant Klipper objects,
- * keeps an interpreted {@link PrinterStatus}, detects {@link PrinterEvent}s and offers
- * simple control commands.
+ * API for one Snapmaker U1.
+ *
+ * <p>Connects to the printer's Moonraker, subscribes to all relevant Klipper objects, keeps an
+ * interpreted {@link PrinterStatus}, detects {@link PrinterEvent}s and offers control commands.
+ * Reconnects on its own when the printer is switched off or Klipper restarts.
  *
  * <pre>{@code
  * SnapmakerPrinter printer = new SnapmakerPrinter("u1", "192.168.1.50", 7125, null);
@@ -37,7 +36,6 @@ import java.util.logging.Logger;
 public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
 
     private static final Logger LOG = Logger.getLogger(SnapmakerPrinter.class.getName());
-    private static final String VERSION = "1.0.0";
 
     /** Objects subscribed with all their fields if the printer provides them. */
     private static final Set<String> FIXED_OBJECTS = Set.of(
@@ -49,15 +47,14 @@ public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
             "extruder", "temperature_sensor ", "temperature_fan ", "heater_generic ", "heater_fan ",
             "fan_generic ", "controller_fan ", "filament_switch_sensor ", "filament_motion_sensor ");
 
-    private final String id;
+    private final String name;
     private final MoonrakerClient client;
     private final EventDetector detector;
     private final List<SnapmakerListener> listeners = new CopyOnWriteArrayList<>();
 
-    // all fields below are only accessed on the client's event thread
-    private final Map<String, Map<String, Object>> raw = new LinkedHashMap<>();
+    // only accessed on the client's event thread
+    private final JSONObject raw = new JSONObject();
     private String klippyState = "disconnected";
-    private volatile PrinterStatus status;
     private PrinterStatus lastOnlineStatus;
     private String metadataFile;
     private Double slicerEstimate;
@@ -65,40 +62,43 @@ public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
     private boolean initPending;
     private int initGeneration;
 
+    private volatile PrinterStatus status;
+
     /**
-     * Creates a printer with default event options (progress every 10 %, layer and action events on).
+     * Creates a printer with the default event options (progress every 10 %, layer and machine
+     * action events on).
      */
-    public SnapmakerPrinter(String id, String host, int port, String apiKey) {
-        this(id, host, port, apiKey, new EventDetector(10, true, true));
+    public SnapmakerPrinter(String name, String host, int port, String apiKey) {
+        this(name, host, port, apiKey, new EventDetector(10, true, true));
     }
 
     /**
-     * @param id       free choosable id, used in MQTT topics
-     * @param host     printer IP / host name
+     * @param name     free name of the printer, reported in every status and event
+     * @param host     printer IP or host name
      * @param port     Moonraker port (7125)
      * @param apiKey   Moonraker API key or {@code null}
      * @param detector event detection options
      */
-    public SnapmakerPrinter(String id, String host, int port, String apiKey, EventDetector detector) {
-        this.id = id;
+    public SnapmakerPrinter(String name, String host, int port, String apiKey, EventDetector detector) {
+        this.name = name;
         this.detector = detector;
         this.client = new MoonrakerClient(host, port, apiKey, this);
-        this.status = PrinterStatus.offline(id, klippyState, "Not connected yet", null);
+        this.status = PrinterStatus.offline(name, klippyState, "not connected yet", null);
     }
 
-    public String getId() {
-        return id;
+    public String getName() {
+        return name;
     }
 
     /**
-     * @return latest status snapshot (never null)
+     * @return the latest status (never null)
      */
     public PrinterStatus getStatus() {
         return status;
     }
 
     /**
-     * @return low level Moonraker client for custom JSON-RPC calls
+     * @return the Moonraker client, for any other JSON-RPC method
      */
     public MoonrakerClient getClient() {
         return client;
@@ -107,13 +107,9 @@ public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
     /**
      * @return a copy of the raw Klipper object states as received from Moonraker
      */
-    public CompletableFuture<Map<String, Map<String, Object>>> getRawState() {
-        CompletableFuture<Map<String, Map<String, Object>>> future = new CompletableFuture<>();
-        client.execute(() -> {
-            Map<String, Map<String, Object>> copy = new LinkedHashMap<>();
-            raw.forEach((k, v) -> copy.put(k, new LinkedHashMap<>(v)));
-            future.complete(copy);
-        });
+    public CompletableFuture<JSONObject> getRawState() {
+        CompletableFuture<JSONObject> future = new CompletableFuture<>();
+        client.execute(() -> future.complete(new JSONObject(raw.toString())));
         return future;
     }
 
@@ -126,7 +122,7 @@ public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
     }
 
     /**
-     * Connects to the printer in the background (with automatic reconnect).
+     * Connects to the printer in the background.
      */
     public void start() {
         client.start();
@@ -137,7 +133,7 @@ public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
         client.close();
     }
 
-    // ------------------------------------------------------------------ commands
+    // ---- commands
 
     public CompletableFuture<Object> pause() {
         return client.call("printer.print.pause", null);
@@ -152,7 +148,7 @@ public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
     }
 
     /**
-     * Immediately halts the printer (M112). Requires a firmware restart afterwards.
+     * Halts the printer immediately (M112). Klipper needs a firmware restart afterwards.
      */
     public CompletableFuture<Object> emergencyStop() {
         return client.call("printer.emergency_stop", null);
@@ -166,7 +162,7 @@ public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
      * Starts printing a file that already exists on the printer.
      */
     public CompletableFuture<Object> startPrint(String filename) {
-        return client.call("printer.print.start", Map.of("filename", filename));
+        return client.call("printer.print.start", new JSONObject().put("filename", filename));
     }
 
     public CompletableFuture<Object> runGcode(String script) {
@@ -176,42 +172,60 @@ public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
     /**
      * Sets a heater target temperature.
      *
-     * @param heater Klipper heater name, e.g. {@code heater_bed}, {@code extruder}, {@code extruder2}
-     * @param target target in °C, 0 to switch off
+     * @param heater Klipper heater name: {@code heater_bed}, {@code extruder}, {@code extruder1}, ...
+     * @param target target in °C, 0 switches the heater off
      */
     public CompletableFuture<Object> setTemperature(String heater, double target) {
-        if (!heater.matches("[A-Za-z0-9_ ]+")) {
-            return CompletableFuture.failedFuture(new IllegalArgumentException("Invalid heater name"));
+        if (!heater.matches("[A-Za-z0-9_]+")) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("invalid heater name: " + heater));
         }
-        return client.runGcode("SET_HEATER_TEMPERATURE HEATER=" + heater.trim() + " TARGET=" + target);
+        return client.runGcode("SET_HEATER_TEMPERATURE HEATER=" + heater + " TARGET=" + target);
     }
 
-    // ------------------------------------------------------------------ Moonraker events
+    /**
+     * Sets a toolhead's nozzle target temperature.
+     *
+     * @param toolhead toolhead index 0..3
+     */
+    public CompletableFuture<Object> setToolheadTemperature(int toolhead, double target) {
+        return setTemperature(toolhead == 0 ? "extruder" : "extruder" + toolhead, target);
+    }
+
+    /**
+     * Sets the part cooling fan speed.
+     *
+     * @param percent 0..100
+     */
+    public CompletableFuture<Object> setPartFanSpeed(double percent) {
+        long value = Math.round(Math.max(0, Math.min(100, percent)) * 2.55);
+        return client.runGcode("M106 S" + value);
+    }
+
+    // ---- Moonraker events
 
     @Override
     public void onConnected() {
-        Map<String, Object> identify = new LinkedHashMap<>();
-        identify.put("client_name", "Snapmaker2MQTT");
-        identify.put("version", VERSION);
-        identify.put("type", "other");
-        identify.put("url", "https://github.com/LinzN/snapmaker2mqtt");
-        client.call("server.connection.identify", identify)
-                .whenComplete((r, e) -> initKlippy());
+        JSONObject identify = new JSONObject()
+                .put("client_name", "snapmaker2mqtt")
+                .put("version", "1.0.0")
+                .put("type", "other")
+                .put("url", "https://github.com/LinzN/snapmaker2mqtt");
+        client.call("server.connection.identify", identify).whenComplete((r, e) -> client.execute(this::initKlippy));
     }
 
     @Override
     public void onDisconnected() {
         klippyState = "disconnected";
-        goOffline("Printer not reachable");
+        goOffline("printer not reachable");
     }
 
     @Override
-    public void onNotification(String method, List<Object> params) {
+    public void onNotification(String method, JSONArray params) {
         switch (method) {
             case "notify_status_update" -> {
-                Map<String, Object> diff = params.isEmpty() ? null : Json.asMap(params.get(0));
+                JSONObject diff = params.optJSONObject(0);
                 if (diff != null && "ready".equals(klippyState)) {
-                    merge(diff);
+                    merge(raw, diff);
                     update();
                 }
             }
@@ -227,32 +241,30 @@ public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
                 scheduleInit();
             }
             case "notify_gcode_response" -> {
-                String line = params.isEmpty() ? null : Json.asString(params.get(0));
+                String line = params.optString(0, null);
                 if (line != null) {
                     listeners.forEach(l -> safe(() -> l.onConsole(line)));
                 }
             }
-            case "notify_history_changed" -> handleHistory(params);
+            case "notify_history_changed" -> handleHistory(params.optJSONObject(0));
             default -> {
-                // other notifications are not relevant here
+                // not relevant
             }
         }
     }
 
-    // ------------------------------------------------------------------ internals
+    // ---- internals
 
     private void initKlippy() {
         initPending = false;
         int generation = ++initGeneration;
         client.call("printer.info", null).thenAccept(result -> {
-            String state = Json.asString(Json.get(result, "state"));
-            klippyState = state == null ? "unknown" : state;
+            JSONObject info = result instanceof JSONObject o ? o : new JSONObject();
+            klippyState = info.optString("state", "unknown");
             if (!"ready".equals(klippyState)) {
-                goOffline(Json.asString(Json.get(result, "state_message")));
+                goOffline(info.optString("state_message", "Klipper not ready"));
                 scheduleInit();
-                return;
-            }
-            if (generation == initGeneration) {
+            } else if (generation == initGeneration) {
                 subscribeObjects();
             }
         }).exceptionally(e -> {
@@ -262,12 +274,12 @@ public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
         });
     }
 
+    /** Asks again in 2 s whether Klipper is ready, unless something else triggered that already. */
     private void scheduleInit() {
         if (!initPending && client.isConnected()) {
             initPending = true;
             int generation = initGeneration;
             client.schedule(() -> {
-                // skip if another initialization (e.g. notify_klippy_ready) happened meanwhile
                 if (initPending && generation == initGeneration) {
                     initKlippy();
                 }
@@ -277,70 +289,63 @@ public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
 
     private void subscribeObjects() {
         client.call("printer.objects.list", null).thenCompose(result -> {
-            List<Object> available = Json.asList(Json.get(result, "objects"));
-            Map<String, Object> objects = new LinkedHashMap<>();
+            JSONArray available = result instanceof JSONObject o ? o.optJSONArray("objects") : null;
+            JSONObject objects = new JSONObject();
             if (available != null) {
-                for (Object o : available) {
-                    String name = String.valueOf(o);
-                    if (FIXED_OBJECTS.contains(name) || OBJECT_PREFIXES.stream().anyMatch(name::startsWith)) {
-                        objects.put(name, null);
+                for (int i = 0; i < available.length(); i++) {
+                    String object = available.optString(i);
+                    if (FIXED_OBJECTS.contains(object) || OBJECT_PREFIXES.stream().anyMatch(object::startsWith)) {
+                        objects.put(object, JSONObject.NULL);
                     }
                 }
             }
-            LOG.info("[" + id + "] Subscribing to " + objects.size() + " printer objects");
-            return client.call("printer.objects.subscribe", Map.of("objects", objects));
+            LOG.info("Printer '" + name + "': subscribing to " + objects.length() + " Klipper objects");
+            return client.call("printer.objects.subscribe", new JSONObject().put("objects", objects));
         }).thenAccept(result -> {
             raw.clear();
-            Map<String, Object> initial = Json.asMap(Json.get(result, "status"));
+            JSONObject initial = result instanceof JSONObject o ? o.optJSONObject("status") : null;
             if (initial != null) {
-                merge(initial);
+                merge(raw, initial);
             }
             update();
         }).exceptionally(e -> {
-            LOG.warning("[" + id + "] Subscribing to printer objects failed: " + e.getMessage());
+            LOG.warning("Printer '" + name + "': subscribing failed: " + e.getMessage());
             client.execute(this::scheduleInit);
             return null;
         });
     }
 
-    private void merge(Map<String, Object> diff) {
-        for (Map.Entry<String, Object> entry : diff.entrySet()) {
-            Map<String, Object> fields = Json.asMap(entry.getValue());
-            if (fields == null) {
-                continue;
-            }
-            deepMerge(raw.computeIfAbsent(entry.getKey(), k -> new LinkedHashMap<>()), fields);
-        }
-    }
-
-    private static void deepMerge(Map<String, Object> target, Map<String, Object> source) {
-        for (Map.Entry<String, Object> entry : source.entrySet()) {
-            Map<String, Object> sourceMap = Json.asMap(entry.getValue());
-            Map<String, Object> targetMap = Json.asMap(target.get(entry.getKey()));
-            if (sourceMap != null && targetMap != null) {
-                deepMerge(targetMap, sourceMap);
+    /** Moonraker only sends changed fields, so updates are merged into the known state. */
+    private static void merge(JSONObject target, JSONObject source) {
+        for (String key : source.keySet()) {
+            Object value = source.get(key);
+            JSONObject existing = target.optJSONObject(key);
+            if (value instanceof JSONObject sourceObject && existing != null) {
+                merge(existing, sourceObject);
             } else {
-                target.put(entry.getKey(), sourceMap != null ? new LinkedHashMap<>(sourceMap) : entry.getValue());
+                target.put(key, value);
             }
         }
     }
 
     private void update() {
-        String filename = Json.asString(Json.get(raw, "print_stats", "filename"));
+        JSONObject printStats = raw.optJSONObject("print_stats");
+        String filename = printStats == null ? null : printStats.optString("filename", "");
         if (filename != null && !filename.isBlank() && !filename.equals(metadataFile)) {
             metadataFile = filename;
             slicerEstimate = null;
             fetchMetadata(filename);
         }
-        PrinterStatus next = PrinterStatus.fromRaw(id, klippyState, raw, slicerEstimate);
+        PrinterStatus next = PrinterStatus.fromRaw(name, klippyState, raw, slicerEstimate);
         PrinterStatus previous = status;
         status = next;
 
         List<PrinterEvent> events = new ArrayList<>();
-        if (previous == null || !previous.online()) {
+        if (!previous.online()) {
             events.add(EventDetector.event(PrinterEventType.PRINTER_ONLINE, next,
-                    EventDetector.details("klippy_state", klippyState)));
+                    EventDetector.details("klippyState", klippyState)));
         }
+        // after an outage compare with the last online state, so a job that ended meanwhile is reported
         events.addAll(detector.detect(lastOnlineStatus, next));
         lastOnlineStatus = next;
 
@@ -357,9 +362,9 @@ public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
     }
 
     private void fetchMetadata(String filename) {
-        client.call("server.files.metadata", Map.of("filename", filename)).thenAccept(result -> {
-            Double estimate = Json.asDouble(Json.get(result, "estimated_time"));
-            if (filename.equals(metadataFile) && estimate != null && estimate > 0) {
+        client.call("server.files.metadata", new JSONObject().put("filename", filename)).thenAccept(result -> {
+            double estimate = result instanceof JSONObject o ? o.optDouble("estimated_time", 0) : 0;
+            if (filename.equals(metadataFile) && estimate > 0) {
                 slicerEstimate = estimate;
                 if ("ready".equals(klippyState)) {
                     update();
@@ -372,15 +377,15 @@ public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
     }
 
     /**
-     * Fallback for job ends that are not visible as a print_stats state
-     * (e.g. Klipper went from printing straight to standby or shut down during a print).
+     * Fallback for job ends that do not show up as a print_stats state, e.g. Klipper went from
+     * printing straight to standby or shut down during a print.
      */
-    private void handleHistory(List<Object> params) {
-        Map<String, Object> payload = params.isEmpty() ? null : Json.asMap(params.get(0));
-        if (payload == null || !"finished".equals(payload.get("action")) || jobEndReported) {
+    private void handleHistory(JSONObject payload) {
+        if (payload == null || !"finished".equals(payload.optString("action")) || jobEndReported) {
             return;
         }
-        String jobStatus = Json.asString(Json.get(payload, "job", "status"));
+        JSONObject job = payload.optJSONObject("job");
+        String jobStatus = job == null ? null : job.optString("status", null);
         PrinterEventType type;
         if ("completed".equals(jobStatus)) {
             type = PrinterEventType.PRINT_FINISHED;
@@ -391,32 +396,32 @@ public class SnapmakerPrinter implements MoonrakerListener, AutoCloseable {
         }
         jobEndReported = true;
         fire(EventDetector.event(type, status, EventDetector.details(
-                "source", "job_history", "job_status", jobStatus,
-                "filename", Json.get(payload, "job", "filename"))));
+                "source", "jobHistory", "jobStatus", jobStatus,
+                "filename", job == null ? null : job.optString("filename", null))));
     }
 
     private void goOffline(String message) {
         PrinterStatus previous = status;
         raw.clear();
-        status = PrinterStatus.offline(id, klippyState, message, lastOnlineStatus);
-        PrinterStatus offline = status;
+        PrinterStatus offline = PrinterStatus.offline(name, klippyState, message, lastOnlineStatus);
+        status = offline;
         listeners.forEach(l -> safe(() -> l.onStatus(offline)));
         if (previous.online()) {
             fire(EventDetector.event(PrinterEventType.PRINTER_OFFLINE, offline,
-                    EventDetector.details("klippy_state", klippyState, "message", message)));
+                    EventDetector.details("klippyState", klippyState, "message", message)));
         }
     }
 
     private void fire(PrinterEvent event) {
-        LOG.info("[" + id + "] Event " + event.type().key()
-                + (event.details().isEmpty() ? "" : " " + Json.stringify(event.details())));
+        LOG.info("Printer '" + name + "': " + event.type().key()
+                + (event.details().isEmpty() ? "" : " " + event.details()));
         listeners.forEach(l -> safe(() -> l.onEvent(event)));
     }
 
     private static void safe(Runnable r) {
         try {
             r.run();
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "Listener failed", e);
         }
     }

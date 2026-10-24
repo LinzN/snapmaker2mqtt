@@ -1,4 +1,4 @@
-package de.linzn.snapmaker2mqtt.printer;
+package de.mirranet.snapmaker;
 
 /**
  * Events detected from state changes of the printer.

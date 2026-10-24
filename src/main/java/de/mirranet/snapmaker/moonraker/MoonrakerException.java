@@ -1,9 +1,11 @@
-package de.linzn.snapmaker2mqtt.moonraker;
+package de.mirranet.snapmaker.moonraker;
 
 /**
- * Error returned by Moonraker or raised by the client (code {@code -1}).
+ * Error returned by Moonraker, or raised by the client itself (code {@code -1}).
  */
 public class MoonrakerException extends RuntimeException {
+
+    private static final long serialVersionUID = 1L;
 
     private final int code;
 

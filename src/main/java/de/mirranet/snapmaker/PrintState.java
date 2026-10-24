@@ -1,4 +1,4 @@
-package de.linzn.snapmaker2mqtt.printer;
+package de.mirranet.snapmaker;
 
 /**
  * Job state as reported by Klipper's {@code print_stats.state}.

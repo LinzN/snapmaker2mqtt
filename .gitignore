@@ -1,5 +1,5 @@
 target/
-*.iml
+build/
+config.yml
 .idea/
-.vscode/
-snapmaker2mqtt.properties
+*.iml

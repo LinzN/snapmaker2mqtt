@@ -1,4 +1,4 @@
-package de.linzn.snapmaker2mqtt.printer;
+package de.mirranet.snapmaker;
 
 /**
  * Receives status updates and events of a {@link SnapmakerPrinter}.

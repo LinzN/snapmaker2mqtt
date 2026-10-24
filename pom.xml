@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xmlns="http://maven.apache.org/POM/4.0.0"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
@@ -10,22 +10,41 @@
     <packaging>jar</packaging>
 
     <name>Snapmaker2MQTT</name>
-    <description>Dependency-free Java bridge that publishes Snapmaker U1 status and events to MQTT</description>
-    <url>https://github.com/LinzN/snapmaker2mqtt</url>
-
-    <licenses>
-        <license>
-            <name>MIT License</name>
-            <url>https://opensource.org/licenses/MIT</url>
-        </license>
-    </licenses>
+    <description>
+        Bridges Snapmaker U1 printers (Klipper/Moonraker on the local LAN) to a local MQTT broker.
+        Status and events (print finished, filament, toolhead changes, ...) are published to MQTT,
+        commands are received from MQTT.
+    </description>
 
     <properties>
-        <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>21</maven.compiler.release>
     </properties>
 
-    <!-- intentionally no dependencies -->
+    <repositories>
+        <repository>
+            <id>mirranet</id>
+            <url>https://builds.mirranet.de/plugin/repository/everything/</url>
+        </repository>
+    </repositories>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.eclipse.paho</groupId>
+            <artifactId>org.eclipse.paho.client.mqttv3</artifactId>
+            <version>1.2.5</version>
+        </dependency>
+        <dependency>
+            <groupId>org.json</groupId>
+            <artifactId>json</artifactId>
+            <version>20260522</version>
+        </dependency>
+        <dependency>
+            <groupId>de.linzn</groupId>
+            <artifactId>simplyConfiguration</artifactId>
+            <version>1.0</version>
+        </dependency>
+    </dependencies>
 
     <build>
         <finalName>snapmaker2mqtt</finalName>
@@ -34,7 +53,11 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.13.0</version>
+                <configuration>
+                    <release>21</release>
+                </configuration>
             </plugin>
+            <!-- Thin jar; the manifest class path points to the libraries in lib/ next to it -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>
@@ -42,10 +65,30 @@
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>de.linzn.snapmaker2mqtt.Snapmaker2Mqtt</mainClass>
+                            <addClasspath>true</addClasspath>
+                            <mainClass>de.snapmaker2mqtt.SnapmakerApp</mainClass>
+                            <classpathPrefix>lib</classpathPrefix>
                         </manifest>
                     </archive>
                 </configuration>
+            </plugin>
+            <!-- Copies all runtime dependencies to target/lib -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.8.1</version>
+                <executions>
+                    <execution>
+                        <phase>process-sources</phase>
+                        <goals>
+                            <goal>copy-dependencies</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}/lib</outputDirectory>
+                            <includeScope>runtime</includeScope>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

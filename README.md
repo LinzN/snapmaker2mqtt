@@ -25,14 +25,6 @@ java -jar target/snapmaker2mqtt.jar snapmaker2mqtt.properties
 The printer's IP is shown on the U1 touchscreen under the network settings.
 If `[authorization]` is enabled in `moonraker.conf`, set `printer.api_key`.
 
-### Docker
-
-```bash
-docker build -t snapmaker2mqtt .
-docker run -d --restart=always --name snapmaker2mqtt \
-  -e S2M_MQTT_HOST=192.168.1.10 -e S2M_PRINTER_HOST=192.168.1.50 snapmaker2mqtt
-```
-
 ### systemd
 
 Copy the jar and config to `/opt/snapmaker2mqtt/`, then install `snapmaker2mqtt.service`.
